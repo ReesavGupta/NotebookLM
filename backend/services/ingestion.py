@@ -43,7 +43,7 @@ if COLLECTION not in [c.name for c in qdrant.get_collections().collections]:
 def process_and_store_chunks(file_path: str):
     # Chunk the document (text, images, tables, etc.)
     hybrid_chunker = HybridChunker()
-    loader = DoclingLoader(file_path=file_path, chunker=hybrid_chunker, export_type=ExportType.DOC_CHUNKS)
+    loader = DoclingLoader(file_path=file_path, chunker=hybrid_chunker,export_type=ExportType.DOC_CHUNKS)
     loaded_chunks = loader.load()
     doc_id = np.random.randint(int(1e6))
     
