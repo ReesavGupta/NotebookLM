@@ -1,0 +1,6 @@
+langchain
+langchain-community
+langchain-docling
+langchain-experimental
+langchain-qdrant
+open_clip_torch
