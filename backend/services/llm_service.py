@@ -45,3 +45,20 @@ def decompose_query(query: str) -> list:
     subqueries = [line.strip('- ').strip() for line in text.splitlines() if line.strip()]
     return subqueries if subqueries else [query]
 
+
+def classify_query_modality(query: str) -> str:
+    """Classify the modality of a query using Groq LLM. Returns one of: 'text', 'image', 'table', 'code'."""
+    if not groq_llm:
+        return "text"
+    prompt = (
+        "Given the following research query, classify which modality it is primarily about. "
+        "Possible modalities are: text, image, table, code. "
+        "Return only the modality name in lowercase, nothing else.\n\nQuery: " + query + "\nModality:"
+    )
+    result = groq_llm.invoke(prompt)
+    text = getattr(result, 'content', str(result)).strip().lower()
+    # Only allow valid modalities
+    if text in ["text", "image", "table", "code"]:
+        return text
+    return "text"
+

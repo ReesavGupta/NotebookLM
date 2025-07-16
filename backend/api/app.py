@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from services.ingestion import process_and_store_chunks, qdrant, clip_embd, sparse_embd, COLLECTION
+from services.ingestion import process_and_store_chunks, qdrant, clip_embd, sparse_embd, COLLECTION, nomic_embd
 from services.retrieval import contextual_compression
-from services.llm_service import multimodal_query, llm, decompose_query
+from services.llm_service import multimodal_query, llm, decompose_query, classify_query_modality
 from services.models import SessionLocal, Document
 from sqlalchemy.orm import Session
 from langchain_qdrant import QdrantVectorStore, RetrievalMode
@@ -29,15 +29,36 @@ async def upload_doc(file: UploadFile = File(...)):
 
 @app.post("/query")
 async def query_doc(query: str = Form(...), k: int = Form(3)):
-    # --- Use Groq for query decomposition ---
+    # --- Use Groq for query decomposition and modality classification ---
     subqueries = decompose_query(query)
     enhanced_query = " ; ".join(subqueries)
+    modality = classify_query_modality(query)
+    # Select embedding model and named vector
+    if modality in ["text", "image"]:
+        embedding_model = clip_embd
+        vector_name = modality
+    elif modality in ["table", "code"]:
+        embedding_model = nomic_embd
+        vector_name = modality
+    else:
+        embedding_model = clip_embd
+        vector_name = "text"
+    # Create a QdrantVectorStore for the correct named vector
+    vector_store = QdrantVectorStore(
+        client=qdrant,
+        collection_name=COLLECTION,
+        embedding=embedding_model,
+        sparse_embedding=sparse_embd,
+        retrieval_mode=RetrievalMode.HYBRID,
+        distance=Distance.COSINE,
+        vector_name=vector_name
+    )
     docs = contextual_compression(vector_store, enhanced_query, k, llm)
+    # Filter results by modality for answer synthesis
     text_chunks = [doc.page_content for doc in docs if doc.metadata.get("modality") == "text"]
     image_paths = [doc.page_content for doc in docs if doc.metadata.get("modality") == "image"]
-    # Multimodal answer synthesis
     answer = multimodal_query(text_chunks, image_paths, enhanced_query)
-    return {"answer": answer, "subqueries": subqueries}
+    return {"answer": answer, "subqueries": subqueries, "modality": modality, "results": [doc.page_content for doc in docs]}
 
 query_history = []
 
