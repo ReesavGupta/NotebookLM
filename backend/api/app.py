@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from services.ingestion import process_and_store_chunks, qdrant, clip_embd, sparse_embd, COLLECTION
 from services.retrieval import contextual_compression
-from services.llm_service import multimodal_query, llm
+from services.llm_service import multimodal_query, llm, decompose_query
 from services.models import SessionLocal, Document
 from sqlalchemy.orm import Session
 from langchain_qdrant import QdrantVectorStore, RetrievalMode
@@ -29,12 +29,15 @@ async def upload_doc(file: UploadFile = File(...)):
 
 @app.post("/query")
 async def query_doc(query: str = Form(...), k: int = Form(3)):
-    docs = contextual_compression(vector_store, query, k, llm)
+    # --- Use Groq for query decomposition ---
+    subqueries = decompose_query(query)
+    enhanced_query = " ; ".join(subqueries)
+    docs = contextual_compression(vector_store, enhanced_query, k, llm)
     text_chunks = [doc.page_content for doc in docs if doc.metadata.get("modality") == "text"]
     image_paths = [doc.page_content for doc in docs if doc.metadata.get("modality") == "image"]
     # Multimodal answer synthesis
-    answer = multimodal_query(text_chunks, image_paths, query)
-    return {"answer": answer}
+    answer = multimodal_query(text_chunks, image_paths, enhanced_query)
+    return {"answer": answer, "subqueries": subqueries}
 
 query_history = []
 

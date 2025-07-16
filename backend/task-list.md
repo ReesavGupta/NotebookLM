@@ -52,7 +52,7 @@
 
 ### Query Processing
 - [ ] Build natural language query parser
-- [ ] Implement cross-modal query decomposition
+- [x] Implement cross-modal query decomposition
 - [ ] Create query intent classification
 - [ ] Build query-to-embedding conversion
 - [ ] Implement query validation and sanitization

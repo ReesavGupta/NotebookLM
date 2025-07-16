@@ -6,3 +6,5 @@ langchain-qdrant
 open_clip_torch
 sqlalchemy
 psycopg2-binary
+langchain-groq
+langchain-nomic
