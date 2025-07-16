@@ -3,10 +3,14 @@ langchain-community
 langchain-docling
 langchain-experimental
 langchain-qdrant
-open_clip_torch
+clip
+pillow
+torch
 sqlalchemy
 psycopg2-binary
 langchain-groq
 langchain-nomic
 fastapi-users[sqlalchemy]
 passlib[bcrypt]
+asyncpg
+fastembed-gpu

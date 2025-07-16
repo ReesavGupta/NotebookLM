@@ -4,7 +4,7 @@ from sqlalchemy.orm import relationship, sessionmaker
 import datetime
 import os
 from dotenv import load_dotenv
-from fastapi_users_db_sqlalchemy import SQLAlchemyBaseUserTable
+from fastapi_users_db_sqlalchemy import SQLAlchemyBaseUserTableUUID
 from pydantic import EmailStr
 from fastapi_users import schemas
 import uuid
@@ -37,7 +37,7 @@ class DocumentChunk(Base):
     # Relationship back to document
     document = relationship('Document', back_populates='chunks')
 
-class User(SQLAlchemyBaseUserTable, Base):
+class User(SQLAlchemyBaseUserTableUUID, Base):
     __tablename__ = 'users'
     # id, email, hashed_password, is_active, is_superuser, is_verified are provided by base
 
@@ -51,9 +51,18 @@ class UserUpdate(schemas.BaseUserUpdate):
     pass
 
 # --- Database setup ---
-DATABASE_URL = "sqlite+aiosqlite:///./test.db"  # Update as needed
-engine = create_async_engine(DATABASE_URL, echo=True)
-async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
+DATABASE_URL = os.getenv("DATABASE_URL")  # Update as needed
+if DATABASE_URL:
+    engine = create_async_engine(DATABASE_URL, echo=True)
+    async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
+else:
+    print("database initialization miserably :C")
+
+import asyncio
+
+async def async_init_db():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
 def init_db():
-    Base.metadata.create_all(bind=engine) 
+    asyncio.run(async_init_db())

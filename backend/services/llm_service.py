@@ -1,4 +1,4 @@
-from langchain_community.llms import Ollama
+from langchain_ollama import OllamaLLM
 from PIL import Image
 import base64
 from io import BytesIO
@@ -6,7 +6,7 @@ import os
 from langchain_groq import ChatGroq
 from pydantic.types import SecretStr
 
-llm = Ollama(model="gemma3:4b") 
+llm = OllamaLLM(model="gemma3:4b") 
 
 def encode_image_to_base64(image_path):
     img = Image.open(image_path).convert("RGB")

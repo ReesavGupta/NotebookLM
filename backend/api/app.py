@@ -1,5 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from services.ingestion import process_and_store_chunks, qdrant, clip_embd, sparse_embd, COLLECTION, nomic_embd
+from services.ingestion import process_and_store_chunks, qdrant, sparse_embd, COLLECTION, nomic_embd, get_text_embedding, get_image_embedding
 from services.retrieval import contextual_compression
 from services.llm_service import multimodal_query, llm, decompose_query, classify_query_modality
 from services.models import Document, User, engine, Base, UserRead, UserCreate, UserUpdate
@@ -8,8 +8,7 @@ from langchain_qdrant import QdrantVectorStore, RetrievalMode
 from qdrant_client.http.models import Distance
 from fastapi_users import FastAPIUsers
 from fastapi_users.authentication import JWTStrategy, AuthenticationBackend, BearerTransport
-from fastapi_users.db import SQLAlchemyUserDatabase
-from fastapi_users_db_sqlalchemy import SQLAlchemyBaseUserTableUUID
+from fastapi_users_db_sqlalchemy import SQLAlchemyUserDatabase
 from pydantic import EmailStr
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session as SyncSession
@@ -19,6 +18,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from services.models import async_session_maker, User
 from typing import AsyncGenerator
 from sqlalchemy.future import select
+from langchain_core.embeddings import Embeddings
+import numpy as np
+from qdrant_client.http.models import SparseVectorParams
+from services.ingestion import NAMED_VECTORS, COLLECTION, qdrant
+
+class DummyEmbeddings(Embeddings):
+    def embed_documents(self, texts):
+        return [np.zeros(512, dtype=np.float32) for _ in texts]
+    def embed_query(self, text):
+        return np.zeros(512, dtype=np.float32)
 
 SECRET = os.getenv("JWT_SECRET", "SECRET")
 
@@ -61,14 +70,16 @@ fastapi_users = FastAPIUsers[
 
 current_active_user = fastapi_users.current_user(active=True)
 
-vector_store = QdrantVectorStore(
-    client=qdrant,
-    collection_name=COLLECTION,
-    embedding=clip_embd,
-    sparse_embedding=sparse_embd, 
-    retrieval_mode=RetrievalMode.HYBRID,
-    distance=Distance.COSINE
-)
+# Remove global vector_store initialization
+# vector_store = QdrantVectorStore(
+#     client=qdrant,
+#     collection_name=COLLECTION,
+#     embedding=DummyEmbeddings(),
+#     sparse_embedding=sparse_embd, 
+#     retrieval_mode=RetrievalMode.HYBRID,
+#     distance=Distance.COSINE,
+#     vector_name="text",
+# )
 
 app = FastAPI()
 
@@ -88,6 +99,33 @@ app.include_router(
     tags=["users"],
 )
 
+@app.on_event("startup")
+def ensure_qdrant_collection():
+    SPARSE_VECTORS = {
+        "text_sparse": SparseVectorParams()
+    }
+    try:
+        qdrant.create_collection(
+            collection_name=COLLECTION,
+            vectors_config=NAMED_VECTORS,
+            sparse_vectors_config=SPARSE_VECTORS
+        )
+    except Exception as e:
+        print(f"Qdrant collection creation error: {e}")
+
+# Utility function to get a QdrantVectorStore for a given vector name
+
+def get_vector_store(vector_name="text"):
+    return QdrantVectorStore(
+        client=qdrant,
+        collection_name=COLLECTION,
+        embedding=DummyEmbeddings(),
+        sparse_embedding=sparse_embd,
+        retrieval_mode=RetrievalMode.HYBRID,
+        distance=Distance.COSINE,
+        vector_name=vector_name,
+    )
+
 @app.post("/upload")
 async def upload_doc(file: UploadFile = File(...)):
     file_path = f"data/{file.filename}"
@@ -104,24 +142,16 @@ async def query_doc(query: str = Form(...), k: int = Form(3)):
     modality = classify_query_modality(query)
     # Select embedding model and named vector
     if modality in ["text", "image"]:
-        embedding_model = clip_embd
+        embedding_model = get_text_embedding
         vector_name = modality
     elif modality in ["table", "code"]:
         embedding_model = nomic_embd
         vector_name = modality
     else:
-        embedding_model = clip_embd
+        embedding_model = get_text_embedding
         vector_name = "text"
-    # Create a QdrantVectorStore for the correct named vector
-    vector_store = QdrantVectorStore(
-        client=qdrant,
-        collection_name=COLLECTION,
-        embedding=embedding_model,
-        sparse_embedding=sparse_embd,
-        retrieval_mode=RetrievalMode.HYBRID,
-        distance=Distance.COSINE,
-        vector_name=vector_name
-    )
+    # Use the utility function to get a QdrantVectorStore for the correct named vector
+    vector_store = get_vector_store(vector_name=vector_name)
     docs = contextual_compression(vector_store, enhanced_query, k, llm)
     # Filter results by modality for answer synthesis
     text_chunks = [doc.page_content for doc in docs if doc.metadata.get("modality") == "text"]
@@ -174,3 +204,17 @@ async def get_document(doc_id: int):
             }
         finally:
             await session.close()
+
+@app.post("/recreate_collection")
+async def recreate_collection():
+    # Define dense and sparse vector configs
+    from services.ingestion import NAMED_VECTORS, COLLECTION, qdrant
+    SPARSE_VECTORS = {
+        "text_sparse": SparseVectorParams()
+    }
+    qdrant.create_collection(
+        collection_name=COLLECTION,
+        vectors_config=NAMED_VECTORS,
+        sparse_vectors_config=SPARSE_VECTORS
+    )
+    return {"status": "Collection recreated with dense and sparse support."}

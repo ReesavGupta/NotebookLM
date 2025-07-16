@@ -1,9 +1,10 @@
 import os
 import numpy as np
-import open_clip
+import clip
+import torch
+from PIL import Image
 from langchain_docling.loader import DoclingLoader, ExportType
 from docling_core.transforms.chunker.hybrid_chunker import HybridChunker
-from langchain_experimental.open_clip import OpenCLIPEmbeddings
 from langchain_qdrant import QdrantVectorStore, RetrievalMode, FastEmbedSparse
 from langchain_core.documents import Document
 from qdrant_client import QdrantClient
@@ -13,25 +14,15 @@ from langchain_community.document_loaders import NotebookLoader
 from langchain_nomic import NomicEmbeddings
 from sqlalchemy.ext.asyncio import AsyncSession
 import asyncio
+import torchvision.transforms as T
 
 COLLECTION = "docling_chunks"
-VECTOR_SIZE = 1024
-model_name = "ViT-g-14"
-checkpoint = "laion2b_s34b_b88k"
+device = "cuda"  # or "cuda" if you have a GPU
+model, preprocess = clip.load("ViT-B/32", device=device)
 
 QDRANT_HOST = os.getenv("QDRANT_HOST", "http://localhost:6333")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", None)
 
-model, _, preprocess = open_clip.create_model_and_transforms(model_name, checkpoint)
-tokenizer = open_clip.get_tokenizer(model_name)
-# --- Embedding models ---
-clip_embd = OpenCLIPEmbeddings(
-    model_name=model_name,
-    checkpoint=checkpoint,
-    preprocess=preprocess,
-    model=model,
-    tokenizer=tokenizer
-)
 sparse_embd = FastEmbedSparse(model_name="Qdrant/bm25")
 # Nomic Embeddings for table and code
 nomic_api_key = os.getenv("NOMIC_API_KEY")
@@ -46,8 +37,8 @@ qdrant = QdrantClient(
 
 # --- Qdrant named vectors config ---
 NAMED_VECTORS = {
-    "text": VectorParams(size=1024, distance=Distance.COSINE),   # CLIP text
-    "image": VectorParams(size=1024, distance=Distance.COSINE),  # CLIP image
+    "text": VectorParams(size=512, distance=Distance.COSINE),   # CLIP text
+    "image": VectorParams(size=512, distance=Distance.COSINE),  # CLIP image
     "table": VectorParams(size=768, distance=Distance.COSINE),   # Nomic
     "code": VectorParams(size=768, distance=Distance.COSINE),    # Nomic
 }
@@ -57,6 +48,24 @@ if COLLECTION not in [c.name for c in qdrant.get_collections().collections]:
         collection_name=COLLECTION,
         vectors_config=NAMED_VECTORS
     )
+
+def get_text_embedding(text):
+    text_tokens = clip.tokenize([text]).to(device)
+    with torch.no_grad():
+        return model.encode_text(text_tokens).cpu().numpy()[0]
+
+def get_image_embedding(image_path):
+    img = Image.open(image_path).convert("RGB")
+    image = preprocess(img)
+    # Ensure image is a torch.Tensor and add batch dimension
+    if isinstance(image, Image.Image):
+        import torchvision.transforms as T
+        image = T.ToTensor()(image)
+    if len(image.shape) == 3:
+        image = image.unsqueeze(0)
+    image = image.to(device)
+    with torch.no_grad():
+        return model.encode_image(image).cpu().numpy()[0]
 
 # ---- INGESTION ----
 def process_and_store_chunks(file_path: str):
@@ -132,12 +141,9 @@ def process_and_store_chunks(file_path: str):
                 # Default fallback
                 docs.append(Document(page_content=getattr(chunk, "page_content", ""), metadata=meta))
     # --- Save Document metadata to DB ---
-    # Remove any import or usage of SessionLocal in this file, as we now use async_session_maker and async sessions exclusively.
     try:
-        # DB operations are now handled asynchronously elsewhere or are not needed here.
         pass
     finally:
-        # No DB session to close
         pass
     print(f"Prepared {len(docs)} chunks for upsert.")
     # --- Store with Qdrant named vectors ---
@@ -146,16 +152,15 @@ def process_and_store_chunks(file_path: str):
         modality = doc.metadata.get("modality", "text")
         vectors = {}
         if modality == "text":
-            vectors["text"] = clip_embd.embed_query(doc.page_content)
+            vectors["text"] = get_text_embedding(doc.page_content)
         elif modality == "image":
-            vectors["image"] = clip_embd.embed_query(doc.page_content)
+            vectors["image"] = get_image_embedding(doc.page_content)
         elif modality == "table":
             vectors["table"] = nomic_embd.embed_query(doc.page_content)
         elif modality == "code":
             vectors["code"] = nomic_embd.embed_query(doc.page_content)
         else:
-            # Default to text
-            vectors["text"] = clip_embd.embed_query(doc.page_content)
+            vectors["text"] = get_text_embedding(doc.page_content)
         points.append({
             "id": f"{os.path.basename(file_path)}_{idx}",
             "payload": doc.metadata,
@@ -170,15 +175,12 @@ def process_and_store_chunks(file_path: str):
 
 async def save_metadata_to_db(file_path, docs):
     async with async_session_maker() as session:
-        # Save Document
         document = Document(
             filename=os.path.basename(file_path),
-            # Add other fields as needed
         )
         session.add(document)
         await session.commit()
         await session.refresh(document)
-        # Save Chunks
         for idx, doc in enumerate(docs):
             chunk_obj = DocumentChunk(
                 document_id=document.id,
@@ -190,10 +192,6 @@ async def save_metadata_to_db(file_path, docs):
             session.add(chunk_obj)
         await session.commit()
 
-# ---- MAIN ----
 if __name__ == "__main__":
     file_path = "PATH_TO_YOUR_DOC.pdf"  # <-- change this!
     vector_store = process_and_store_chunks(file_path)
-    # Example hybrid search
-    # hybrid_search(vector_store, "What is shown in the diagram?", k=3)
-    # hybrid_search(vector_store, "Summarize the introduction section.", k=3)
