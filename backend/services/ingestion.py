@@ -2,13 +2,14 @@ import os
 import numpy as np
 import clip
 import torch
+import uuid
 from PIL import Image
 from langchain_docling.loader import DoclingLoader, ExportType
 from docling_core.transforms.chunker.hybrid_chunker import HybridChunker
 from langchain_qdrant import QdrantVectorStore, RetrievalMode, FastEmbedSparse
 from langchain_core.documents import Document
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, VectorParams
+from qdrant_client.http.models import Distance, VectorParams, PointStruct
 from services.models import async_session_maker, Document, DocumentChunk
 from langchain_community.document_loaders import NotebookLoader
 from langchain_nomic import NomicEmbeddings
@@ -50,9 +51,30 @@ if COLLECTION not in [c.name for c in qdrant.get_collections().collections]:
     )
 
 def get_text_embedding(text):
-    text_tokens = clip.tokenize([text]).to(device)
+    # Binary search for the longest prefix that fits in 77 tokens for CLIP
+    max_tokens = 77
+    left, right = 0, len(text)
+    best = ""
+    while left <= right:
+        mid = (left + right) // 2
+        candidate = text[:mid]
+        try:
+            tokens = clip.tokenize([candidate])
+            if tokens.shape[1] <= max_tokens:
+                best = candidate
+                left = mid + 1
+            else:
+                right = mid - 1
+        except RuntimeError:
+            right = mid - 1
+    tokens = clip.tokenize([best])
+    tokens = tokens.to(device)
     with torch.no_grad():
-        return model.encode_text(text_tokens).cpu().numpy()[0]
+        return model.encode_text(tokens).cpu().numpy()[0]
+
+# --- CHUNKING CONFIG SUGGESTION ---
+# For CLIP: aim for ~200-250 chars per chunk.
+# For transformers: aim for ~1000-1500 chars per chunk, but always truncate to 512 tokens before embedding.
 
 def get_image_embedding(image_path):
     img = Image.open(image_path).convert("RGB")
@@ -90,7 +112,7 @@ def process_and_store_chunks(file_path: str):
             meta["modality"] = "notebook"
             meta["chunk_idx"] = idx
             meta["text_preview"] = chunk.page_content[:200]
-            docs.append(Document(page_content=chunk.page_content, metadata=meta))
+            docs.append(Document(content=chunk.page_content, meta=meta))
     else:
         # Chunk the document (text, images, tables, etc.)
         hybrid_chunker = HybridChunker()
@@ -125,21 +147,21 @@ def process_and_store_chunks(file_path: str):
                     with open(img_path, "wb") as f:
                         f.write(blob)
                     meta["image_path"] = img_path
-                    docs.append(Document(page_content=img_path, metadata=meta))
+                    docs.append(Document(content=img_path, meta=meta))
                 else:
                     # If no blob, skip this chunk
                     continue
             elif modality == "text":
-                docs.append(Document(page_content=getattr(chunk, "page_content", ""), metadata=meta))
+                docs.append(Document(content=getattr(chunk, "page_content", ""), meta=meta))
             elif modality == "table":
                 # Table chunk: for now treat as text, but ready for table embedding
-                docs.append(Document(page_content=getattr(chunk, "page_content", ""), metadata=meta))
+                docs.append(Document(content=getattr(chunk, "page_content", ""), meta=meta))
             elif modality == "code":
                 # Code chunk: for now treat as text, but ready for code embedding
-                docs.append(Document(page_content=getattr(chunk, "page_content", ""), metadata=meta))
+                docs.append(Document(content=getattr(chunk, "page_content", ""), meta=meta))
             else:
                 # Default fallback
-                docs.append(Document(page_content=getattr(chunk, "page_content", ""), metadata=meta))
+                docs.append(Document(content=getattr(chunk, "page_content", ""), meta=meta))
     # --- Save Document metadata to DB ---
     try:
         pass
@@ -149,26 +171,25 @@ def process_and_store_chunks(file_path: str):
     # --- Store with Qdrant named vectors ---
     points = []
     for idx, doc in enumerate(docs):
-        modality = doc.metadata.get("modality", "text")
-        vectors = {}
+        modality = doc.meta.get("modality", "text")
+        vector = {}
         if modality == "text":
-            vectors["text"] = get_text_embedding(doc.page_content)
+            vector["text"] = np.array(get_text_embedding(doc.content), dtype=np.float32)
         elif modality == "image":
-            vectors["image"] = get_image_embedding(doc.page_content)
-        elif modality == "table":
-            vectors["table"] = nomic_embd.embed_query(doc.page_content)
-        elif modality == "code":
-            vectors["code"] = nomic_embd.embed_query(doc.page_content)
+            vector["image"] = np.array(get_image_embedding(doc.content), dtype=np.float32)
+        elif modality in {"table", "code"}:
+            vector[modality] = np.array(nomic_embd.embed_query(doc.content), dtype=np.float32)
         else:
-            vectors["text"] = get_text_embedding(doc.page_content)
-        points.append({
-            "id": f"{os.path.basename(file_path)}_{idx}",
-            "payload": doc.metadata,
-            "vectors": vectors
-        })
-    qdrant.upsert(
+            vector["text"] = np.array(get_text_embedding(doc.content), dtype=np.float32)
+        points.append(PointStruct(
+            id=str(uuid.uuid4()),
+            payload=doc.meta,
+            vector=vector
+        ))
+    qdrant.upload_points(
         collection_name=COLLECTION,
-        points=points
+        points=points,
+        batch_size=8
     )
     print(f"Stored {len(points)} chunks in Qdrant with named vectors.")
     return None

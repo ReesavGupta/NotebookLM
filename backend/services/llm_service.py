@@ -26,7 +26,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if GROQ_API_KEY:
     groq_llm = ChatGroq(
         api_key=SecretStr(GROQ_API_KEY),
-        model="mixtral-8x7b-32768"  # or another Groq-supported model
+        model="llama-3.1-8b-instant"  # or another Groq-supported model
     )
 else:
     groq_llm = None

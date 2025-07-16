@@ -23,6 +23,7 @@ class Document(Base):
     author = Column(String)
     upload_time = Column(DateTime, default=datetime.datetime.utcnow)
     meta = Column(JSON)  # Renamed from 'metadata' to 'meta'
+    content = Column(Text)  # <-- Add this line to store document content
     # Relationship to chunks
     chunks = relationship('DocumentChunk', back_populates='document')
 

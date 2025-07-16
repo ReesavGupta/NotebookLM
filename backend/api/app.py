@@ -22,6 +22,7 @@ from langchain_core.embeddings import Embeddings
 import numpy as np
 from qdrant_client.http.models import SparseVectorParams
 from services.ingestion import NAMED_VECTORS, COLLECTION, qdrant
+from fastapi.middleware.cors import CORSMiddleware
 
 class DummyEmbeddings(Embeddings):
     def embed_documents(self, texts):
@@ -45,6 +46,9 @@ class UserManager(BaseUserManager[User, uuid.UUID]):
     user_db_model = User
     reset_password_token_secret = SECRET
     verification_token_secret = SECRET
+
+    def parse_id(self, value: str) -> uuid.UUID:
+        return uuid.UUID(value)
 
 def get_user_manager(user_db=Depends(get_user_db)):
     yield UserManager(user_db)
@@ -82,6 +86,20 @@ current_active_user = fastapi_users.current_user(active=True)
 # )
 
 app = FastAPI()
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",  # Vite default
+        "http://localhost:3000",  # React default
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:3000"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(
     fastapi_users.get_auth_router(auth_backend),
@@ -124,6 +142,7 @@ def get_vector_store(vector_name="text"):
         retrieval_mode=RetrievalMode.HYBRID,
         distance=Distance.COSINE,
         vector_name=vector_name,
+        sparse_vector_name="text_sparse"
     )
 
 @app.post("/upload")
