@@ -36,7 +36,7 @@ def decompose_query(query: str) -> list:
     if not groq_llm:
         return [query]
     prompt = (
-        "Decompose the following complex research query into a list of clear, atomic sub-queries. "
+        "Decompose the following complex research query into a list of 3 clear, atomic sub-queries. "
         "Return only the list, one per line.\n\nQuery: " + query + "\nSub-queries:"
     )
     result = groq_llm.invoke(prompt)

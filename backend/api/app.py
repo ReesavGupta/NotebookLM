@@ -30,6 +30,12 @@ class DummyEmbeddings(Embeddings):
     def embed_query(self, text):
         return np.zeros(512, dtype=np.float32)
 
+class LangchainEmbeddings(Embeddings):
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [get_text_embedding(text) for text in texts]
+    def embed_query(self, text: str) -> list[float]:
+        return get_text_embedding(text)
+
 SECRET = os.getenv("JWT_SECRET", "SECRET")
 
 # User DB setup
@@ -137,7 +143,7 @@ def get_vector_store(vector_name="text"):
     return QdrantVectorStore(
         client=qdrant,
         collection_name=COLLECTION,
-        embedding=DummyEmbeddings(),
+        embedding=LangchainEmbeddings(),  # Use real embedding
         sparse_embedding=sparse_embd,
         retrieval_mode=RetrievalMode.HYBRID,
         distance=Distance.COSINE,
@@ -150,16 +156,14 @@ async def upload_doc(file: UploadFile = File(...)):
     file_path = f"data/{file.filename}"
     with open(file_path, "wb") as f:
         f.write(await file.read())
-    process_and_store_chunks(file_path)
+    await process_and_store_chunks(file_path)  # process_and_store_chunks is async, so await is correct
     return {"status": "Document uploaded and ingested."}
 
 @app.post("/query")
 async def query_doc(query: str = Form(...), k: int = Form(3)):
-    # --- Use Groq for query decomposition and modality classification ---
     subqueries = decompose_query(query)
     enhanced_query = " ; ".join(subqueries)
     modality = classify_query_modality(query)
-    # Select embedding model and named vector
     if modality in ["text", "image"]:
         embedding_model = get_text_embedding
         vector_name = modality
@@ -169,10 +173,9 @@ async def query_doc(query: str = Form(...), k: int = Form(3)):
     else:
         embedding_model = get_text_embedding
         vector_name = "text"
-    # Use the utility function to get a QdrantVectorStore for the correct named vector
     vector_store = get_vector_store(vector_name=vector_name)
-    docs = contextual_compression(vector_store, enhanced_query, k, llm)
-    # Filter results by modality for answer synthesis
+    docs = await contextual_compression(vector_store, enhanced_query, k, llm)  # contextual_compression is async, so await is correct
+    print("\n\nthese are the docs that i am recieving: ", docs, "\n\n")
     text_chunks = [doc.page_content for doc in docs if doc.metadata.get("modality") == "text"]
     image_paths = [doc.page_content for doc in docs if doc.metadata.get("modality") == "image"]
     answer = multimodal_query(text_chunks, image_paths, enhanced_query)
@@ -196,12 +199,16 @@ async def list_documents():
             result = await session.execute(select(Document))
             docs = result.scalars().all()
             return [
-                {
+                 {
                     "id": doc.id,
                     "filename": doc.filename,
-                    "uploaded_by": doc.uploaded_by,
-                    "created_at": doc.created_at,
-                }
+                    "filetype": doc.filetype,
+                    "title": doc.title,
+                    "author": doc.author,
+                    "upload_time": doc.upload_time,
+                    "meta": doc.meta,
+                    "content": doc.content,
+                 }
                 for doc in docs
             ]
         finally:

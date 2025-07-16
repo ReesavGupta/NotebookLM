@@ -16,6 +16,7 @@ from langchain_nomic import NomicEmbeddings
 from sqlalchemy.ext.asyncio import AsyncSession
 import asyncio
 import torchvision.transforms as T
+import datetime
 
 COLLECTION = "docling_chunks"
 device = "cuda"  # or "cuda" if you have a GPU
@@ -90,7 +91,7 @@ def get_image_embedding(image_path):
         return model.encode_image(image).cpu().numpy()[0]
 
 # ---- INGESTION ----
-def process_and_store_chunks(file_path: str):
+async def process_and_store_chunks(file_path: str):
     # Detect file type
     ext = os.path.splitext(file_path)[1].lower()
     docs = []
@@ -164,7 +165,7 @@ def process_and_store_chunks(file_path: str):
                 docs.append(Document(content=getattr(chunk, "page_content", ""), meta=meta))
     # --- Save Document metadata to DB ---
     try:
-        pass
+        await save_metadata_to_db(file_path, docs)
     finally:
         pass
     print(f"Prepared {len(docs)} chunks for upsert.")
@@ -198,21 +199,15 @@ async def save_metadata_to_db(file_path, docs):
     async with async_session_maker() as session:
         document = Document(
             filename=os.path.basename(file_path),
+            filetype=os.path.splitext(file_path)[1][1:] or "unknown",  # e.g., 'pdf'
+            upload_time=datetime.datetime.utcnow(),
+            meta={"num_chunks": len(docs)},
+            content="\n\n".join([doc.content for doc in docs if hasattr(doc, "content")])
         )
         session.add(document)
-        await session.commit()
-        await session.refresh(document)
-        for idx, doc in enumerate(docs):
-            chunk_obj = DocumentChunk(
-                document_id=document.id,
-                chunk_idx=idx,
-                content=doc.page_content,
-                modality=doc.metadata.get("modality", "text"),
-                meta=doc.metadata
-            )
-            session.add(chunk_obj)
         await session.commit()
 
 if __name__ == "__main__":
     file_path = "PATH_TO_YOUR_DOC.pdf"  # <-- change this!
-    vector_store = process_and_store_chunks(file_path)
+    # vector_store = await process_and_store_chunks(file_path)  # Only use await in async context
+    # To run this, use: asyncio.run(process_and_store_chunks(file_path)) in an async context
