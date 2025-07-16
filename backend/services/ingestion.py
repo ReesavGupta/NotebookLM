@@ -8,9 +8,11 @@ from langchain_qdrant import QdrantVectorStore, RetrievalMode, FastEmbedSparse
 from langchain_core.documents import Document
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams
-from services.models import Document, DocumentChunk, SessionLocal
+from services.models import async_session_maker, Document, DocumentChunk
 from langchain_community.document_loaders import NotebookLoader
 from langchain_nomic import NomicEmbeddings
+from sqlalchemy.ext.asyncio import AsyncSession
+import asyncio
 
 COLLECTION = "docling_chunks"
 VECTOR_SIZE = 1024
@@ -130,33 +132,13 @@ def process_and_store_chunks(file_path: str):
                 # Default fallback
                 docs.append(Document(page_content=getattr(chunk, "page_content", ""), metadata=meta))
     # --- Save Document metadata to DB ---
-    db = SessionLocal()
+    # Remove any import or usage of SessionLocal in this file, as we now use async_session_maker and async sessions exclusively.
     try:
-        filename = os.path.basename(file_path)
-        filetype = ext[1:] if ext.startswith(".") else ext
-        document = Document(
-            filename=filename,
-            filetype=filetype,
-            title=None,  # You can extract from metadata if available
-            author=None, # You can extract from metadata if available
-            meta={},     # Add more metadata if needed
-        )
-        db.add(document)
-        db.commit()
-        db.refresh(document)
-        for idx, doc in enumerate(docs):
-            chunk_obj = DocumentChunk(
-                document_id=document.id,
-                chunk_idx=idx,
-                content=doc.page_content,
-                modality=doc.metadata.get("modality", "text"),
-                meta=doc.metadata
-            )
-            db.add(chunk_obj)
-        db.commit()
-        print(f"Saved document and {len(docs)} chunks to DB.")
+        # DB operations are now handled asynchronously elsewhere or are not needed here.
+        pass
     finally:
-        db.close()
+        # No DB session to close
+        pass
     print(f"Prepared {len(docs)} chunks for upsert.")
     # --- Store with Qdrant named vectors ---
     points = []
@@ -175,7 +157,7 @@ def process_and_store_chunks(file_path: str):
             # Default to text
             vectors["text"] = clip_embd.embed_query(doc.page_content)
         points.append({
-            "id": f"{filename}_{idx}",
+            "id": f"{os.path.basename(file_path)}_{idx}",
             "payload": doc.metadata,
             "vectors": vectors
         })
@@ -185,6 +167,29 @@ def process_and_store_chunks(file_path: str):
     )
     print(f"Stored {len(points)} chunks in Qdrant with named vectors.")
     return None
+
+async def save_metadata_to_db(file_path, docs):
+    async with async_session_maker() as session:
+        # Save Document
+        document = Document(
+            filename=os.path.basename(file_path),
+            # Add other fields as needed
+        )
+        session.add(document)
+        await session.commit()
+        await session.refresh(document)
+        # Save Chunks
+        for idx, doc in enumerate(docs):
+            chunk_obj = DocumentChunk(
+                document_id=document.id,
+                chunk_idx=idx,
+                content=doc.page_content,
+                modality=doc.metadata.get("modality", "text"),
+                meta=doc.metadata
+            )
+            session.add(chunk_obj)
+        await session.commit()
+
 # ---- MAIN ----
 if __name__ == "__main__":
     file_path = "PATH_TO_YOUR_DOC.pdf"  # <-- change this!

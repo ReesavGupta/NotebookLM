@@ -8,3 +8,5 @@ sqlalchemy
 psycopg2-binary
 langchain-groq
 langchain-nomic
+fastapi-users[sqlalchemy]
+passlib[bcrypt]
